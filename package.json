@@ -1,0 +1,14 @@
+{
+  "name": "boardgamecore-js",
+  "version": "0.1.0",
+  "description": "lib for board game implementation client side, for boardgamecore.net",
+  "main": "index.js",
+  "scripts": {
+    "concat": "cat src/*.js"
+  },
+  "author": "admin@boardgamecore.net",
+  "license": "ISC",
+  "devDependencies": {
+    "uglify-js": "^2.6.2"
+  }
+}

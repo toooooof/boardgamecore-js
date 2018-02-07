@@ -401,6 +401,22 @@
 
 	}
     
+    BGC.giveUrlParameter = function(paramName) {
+        if (paramName != undefined && paramName.length > 0) {
+            var params = window.location.search.substr(1);
+            if (params != undefined && params.length > 0) {
+                paramsTab = params.split("&");
+                for (var i = 0 ; i < paramsTab.length ; i++) {
+                    var t = paramsTab[i].split("=");
+                    if (t.length == 2 && t[0] == paramName) {
+                        return t[1];
+                    }
+                }
+            }
+        }
+
+        return undefined;
+    }
     
     /******************************************
      ******************************************
@@ -464,15 +480,86 @@
             }
         }
         
-        this.initLoad = function(callback, context, errorCallback, errorContext) {
+        this.saveGameData = function(model, creation, callback, context) {
+            showLoader();
+
+            var turn = model.workflow.turn;
+            var nextPlayer = model.players[model.workflow.currentPlayer].name;
+
+            var phase = model.workflow.phase;
+            /*if (phase == SETUP_RESERVE || phase == RESTRUCTURING || phase == CLEAN_UP || phase == PAYDAY) {
+                nextPlayer = '';
+                var u = _.uniq(model.workflow.ready);
+                for (var i = 0 ; i < model.players.length; i++) {
+                    if (u.indexOf(i) == -1) {
+                        if (phase != PAYDAY || model.players[i].skipPayday !== true) {
+                            if (nextPlayer.length > 0) {
+                                nextPlayer += ',';
+                            }
+                            nextPlayer += model.players[i].name;
+                        }
+                    }
+                }
+            }
+
+            var phaseStr = PHASES_STR[phase];
+            if (phase >= END_GAME) {
+                phaseStr = PHASES_STR[END_GAME];
+            }*/
+
+            var callData = {
+                    id: this.gameId,
+                    action: creation === true ? 'create' : 'save',
+                    data: BGC.Encoder.encode(model.export()),
+                    decade: turn,
+                    nextPlayer: nextPlayer,
+                    phase: phase,
+                    //deleteMoves: (phase == RESTRUCTURING ? "true" : "false"),
+                    status: 'ACTIVE'
+                };
+
+            if (model.workflow.phase >= END_GAME) {
+                callData.status = 'FINISHED';
+                callData.winner = Rules.winner(model);
+                callData.deleteMoves = "true";
+            }
+
             $.ajax({
                 url: this.url,
-                type: 'GET',
+                type: 'POST',
+                data: callData,
+                success: function(d,s,x) {
+                    hideLoader();
+                    if (d == "ok") {
+                        //IO.blur();
+                        if (callback != undefined && context != undefined) {
+                            callback.call(context);
+                        }
+                    } else if (d == "error-late") {
+                        alert("Your data might be outdated. Please try to reload this page and play your move again. It the problem persists, please contact the admin.");
+                    }
+                },
+                error: function() {
+                    alert('Something went wrong. Please reload the page. If the problem is still here, please contact the admin')
+                }
+            });
+
+        },
+
+        this.initLoad = function(callback, context, errorCallback, errorContext) {
+            showLoader();
+            var url = this.url;
+            var gameId = this.gameId;
+            $.ajax({
+                url: url,
+                type: 'POST',
                 data: {
-                    id: this.gameId,
-                    action: 'initLoad'
+                    id: gameId,
+                    bug: BGC.giveUrlParameter("bug"),
+                    action: 'initLoad',
                 }, 
                 success: function(data) {
+                    hideLoader();
                     callback.call(context, data);
                 },
                 error: function(error) {
@@ -485,7 +572,7 @@
             });
         }
         
-        init(options);   
+        init.call(this, options);   
     };
     
     
@@ -587,7 +674,7 @@
                 if (last > -1 && t.length > last) {
                     var button = $('<div><button>Show full log</button></div>');
                     button.on('click', function() {
-                        Log.refreshHistory(model, -1);
+                        model.refreshHistory(-1);
                     });
                     $("#history").append(button);
                     t = t.slice(t.length-last, t.length);
@@ -599,12 +686,270 @@
             }
         }
 
-        
         init.call(this);
     }
     
     
     
+    BGC.BugReport = function(options) {
+        function init() {
+            this.userName = options.userName;
+
+            if (options.url != undefined) {
+                this.url = options.url;
+            } else if (window.URL_TO_BACKEND != undefined) {
+                this.url = window.URL_TO_BACKEND;
+            }
+
+            if (options.gameId != undefined) {
+                this.gameId = options.gameId;
+            } else if (window.GAME_ID != undefined) {
+                this.gameId = window.GAME_ID;
+            } else {
+                try {
+                    var id = window.location.pathname.split("/")[2].split("-")[0];
+                    this.gameId = parseInt(id);
+                } catch (err) {
+                    
+                }
+            }
+
+            this.success = options.success;
+            this.successContext = options.successContext;
+
+            if ($("#bugReport").length == undefined || $("#bugReport").length == 0) {
+                $("body div:nth(1)").prepend('<div id="bugReport"/>');
+            }
+
+            var bugReport = $('#bugReport');
+            bugReport.empty();
+            bugReport.append('<h2>Bug Report</h2><p>Provide here any relevant information about a problem that happened with this game (about the rules, the interface, etc). Please stop the game. Start another one if you really want to keep playing.</p><div><textarea cols="150" rows="10" name="bugContent" id="bugContent"></textarea></div><div><button id="submitBug" class="pure-button">Submit</button><button id="resetBug" class="pure-button">Reset</button></div>');
+
+            $("#bugReport #submitBug").off().on('click', {context: this}, function(e) {
+                var desc = $("#bugContent").val();
+
+                if (desc != undefined && desc.length > 0) {
+                    bugEntry.call(e.data.context, desc);
+                }
+            });
+
+            $("#bugReport #resetBug").off().on('click', function() {
+                $("#bugContent").val("");
+                closeBugReport();
+            });
+        }
+
+        function closeBugReport() {
+            $("#bugReport").hide();
+        }
+
+        bugEntry = function(desc) {
+            showLoader();
+
+            var me = this;
+
+            var d = {
+                    id: me.gameId,
+                    action: 'bugentry',
+                    user: me.userName,
+                    description: desc
+                };
+            if (Main.M != undefined) {
+                d.data = BGC.Encoder.encode(Main.M.export());
+            }
+
+            $.ajax({
+                url: me.url,
+                type: 'POST',
+                data: d,
+                success: function (d, s, x) {
+                    hideLoader();
+                    closeBugReport();
+                    if (me.success != undefined && me.successContext != undefined) {
+                        me.success.call(me.successContext, d);
+                    }
+                }
+            });
+        };
+
+        init.call(this);
+     
+    }
+
+    BGC.Notes = function(options) {
+            function init() {
+                this.userName = options.userName;
+
+                if (options.url != undefined) {
+                    this.url = options.url;
+                } else if (window.URL_TO_BACKEND != undefined) {
+                    this.url = window.URL_TO_BACKEND;
+                }
+
+                if (options.gameId != undefined) {
+                    this.gameId = options.gameId;
+                } else if (window.GAME_ID != undefined) {
+                    this.gameId = window.GAME_ID;
+                } else {
+                    try {
+                        var id = window.location.pathname.split("/")[2].split("-")[0];
+                        this.gameId = parseInt(id);
+                    } catch (err) {
+
+                    }
+                }
+
+                this.success = options.success;
+                this.successContext = options.successContext;
+
+                if ($("#notes").length == undefined || $("#notes").length == 0) {
+                    $("body div:nth(1)").prepend('<div id="notes"/>');
+                }
+
+                var notes = $('#notes');
+                notes.empty();
+                notes.append('<h2>Personal notes</h2><p>Everything written here will be kept secret, readable only by you.</p><div><textarea cols="150" rows="10" name="note" id="note"></textarea></div><div><button id="submitNote" class="pure-button">Submit</button></div>');
+
+                $("#notes #submitNote").off().on('click', {context: this}, function(e) {
+                    var desc = $("#note").val();
+                    submitNote.call(e.data.context, desc);
+                });
+
+                if (options.initNote != undefined) {
+                    $("#note").val(options.initNote);
+                }
+
+            }
+
+            function closeNotes() {
+                $("#notes").hide();
+            }
+
+            submitNote = function(desc) {
+                showLoader();
+
+                var me = this;
+
+                var d = {
+                        id: me.gameId,
+                        action: 'notes',
+                        user: me.userName,
+                        note: desc,
+                        type: 'post'
+                    };
+
+                $.ajax({
+                    url: me.url,
+                    type: 'POST',
+                    data: d,
+                    success: function (d, s, x) {
+                        hideLoader();
+                        closeNotes();
+                        if (me.success != undefined && me.successContext != undefined) {
+                            me.success.call(me.successContext, d);
+                        }
+                    }
+                });
+            };
+
+            init.call(this);
+
+        }
+
+
+    BGC.Chat = function(options) {
+        function init() {
+            this.userName = options.userName;
+
+            if (options.url != undefined) {
+                this.url = options.url;
+            } else if (window.URL_TO_BACKEND != undefined) {
+                this.url = window.URL_TO_BACKEND;
+            }
+
+            if (options.gameId != undefined) {
+                this.gameId = options.gameId;
+            } else if (window.GAME_ID != undefined) {
+                this.gameId = window.GAME_ID;
+            } else {
+                try {
+                    var id = window.location.pathname.split("/")[2].split("-")[0];
+                    this.gameId = parseInt(id);
+                } catch (err) {
+                    
+                }
+            }
+
+            this.success = options.success;
+            this.successContext = options.successContext;
+
+            if ($("#messages").length == undefined || $("#messages").length == 0) {
+                $("body div:nth(1)").prepend('<div id="messages"/>');
+            }
+
+            var chat = $('#messages');
+            chat.empty();
+            chat.append('<div id="chatBox"><h2>Post a message</h2><div><textarea rows="6" name="chatMessage" id="chatMessage"></textarea></div><div><button class="pure-button">Submit</button></div></div><div id="messageList"></div');
+
+            $("#chatBox button").off().on('click', {context: this}, function(e) {
+                var message = $("#chatMessage").val();
+
+                if (message != undefined && message.length > 0) {
+                    $("#chatMessage").val("");
+                    postMessage.call(e.data.context, message);
+                }
+            });
+
+            if (options.initChat != undefined && options.initChat.length) {
+                for (var i = 0 ; i < options.initChat.length ; i++) {
+                    addChatMessage(options.initChat[i]);
+                }
+            }
+
+        }
+
+        addChatMessage = function(m, pre) {
+            var div = $('<div class="chatentry" >');
+            var header = $('<div class="header"/>');
+            header.append('<span class="date">' + BGC.giveFormattedDate(m.timestamp) + ' </span>');
+            header.append('<span class="bold">' + m.nom + '</span>');
+            div.append(header);
+            div.append('<div class="body">' + m.message.replace(/\n/g, "<br/>")+ '</span>');
+            if (m.date != undefined) div.data('ts', m.timestamp);
+            else div.data('ts', -1);
+            if (pre === true) $("#messageList").prepend(div);
+            else $("#messageList").append(div);
+        }
+
+        postMessage = function(message) {
+            showLoader();
+            var me = this;
+            $.ajax({
+                url: me.url,
+                type: 'POST',
+                data: {
+                    id: me.gameId,
+                    action: 'chatmessage',
+                    type: 'add',
+                    player: me.userName,
+                    message: htmlEscape(message),
+                    notif: true
+                },
+                success: function() {
+                    hideLoader();
+                    var d = new Date().getTime();
+                    var m = {message:htmlEscape(message),nom:me.userName,timestamp:d};
+                    addChatMessage.call(me, m, true);
+                    if (me.success != undefined && me.successContext != undefined) {
+                        me.success.call(me.successContext, d);
+                    }
+                }
+            });
+        }
+
+        init.call(this);
+     
+    }
     
     /******************************************
      ******************************************
@@ -655,32 +1000,45 @@
         } 
         
         this.startAtLoad = function(data) {
-            if (data.load != undefined) {
+            if (typeof data === "string") {
+                data = JSON.parse(data);
+            }
+
+            if (data.bugData != undefined) {
+                this.M = model.import(data.bugData);
+                this.M.data = data;
+                this.M.data.fullreset = data.bugData;
+                if (log != undefined) {
+                    this.M.LOG = new BGC.Log(log);
+                    this.M.refreshHistory();
+                }
+            } else if (data.load != undefined) {
                 this.M = model.import(data.load);
                 this.M.data = data;
                 this.M.data.fullreset = data.load;
                 if (log != undefined) {
                     this.M.LOG = new BGC.Log(log);
-                    this.M.LOG.refreshHistory(this.M);
+                    this.M.refreshHistory();
                 }
             } else {
                 this.M = new model();
                 this.M.data = data;
                 if (log != undefined) {
                     this.M.LOG = new BGC.Log(log);
-                    this.M.LOG.refreshHistory(this.M);
+                    this.M.refreshHistory();
                 }
                 this.M.init(data.players, data.startingOption);
+                this.io.saveGameData(this.M, true);
             }
-            
+
             this.V = new view(this.M);
-            this.C = new controller(this.M, this.V);
-            /*if (this.M.getContext() != undefined) {
-                this.C.context = this.M.getContext();
-            } else {
-                delete this.C.context;
-            }*/
+            this.C = new controller(this.M, this.V, log);
             this.V.render();
+
+            window.BugReport = new BGC.BugReport({userName: data.name});
+            window.Chat = new BGC.Chat({userName: data.name, initChat: data.chat});
+            window.Notes = new BGC.Notes({userName: data.name, initNote: data.note});
+
             this.C.start();
         }
         
@@ -691,3 +1049,22 @@
     window.BGC = BGC;
     
 })(window.BGC || {});
+
+function htmlEscape(str) {
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+}
+
+// I needed the opposite function today, so adding here too:
+function htmlUnescape(value){
+    return String(value)
+        .replace(/&quot;/g, '"')
+        .replace(/&#39;/g, "'")
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&amp;/g, '&');
+}
